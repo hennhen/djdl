@@ -34,6 +34,21 @@ VALID_BROWSERS = ("chrome", "safari", "firefox", "brave", "edge")
 AUDIO_EXTS = (".m4a", ".mp3")
 
 
+def self_invocation():
+    """How to re-run this script from the user's shell right now — `djdl` once
+    it's on PATH, otherwise the full python invocation that actually works."""
+    self_path = Path(__file__).resolve()
+    on_path = shutil.which("djdl")
+    if on_path:
+        installed = Path(on_path).resolve()
+        try:
+            if installed == self_path or installed.read_bytes() == self_path.read_bytes():
+                return "djdl"
+        except OSError:
+            pass
+    return f"python3 {self_path}"
+
+
 def split_urls(text):
     """Split a pasted blob into individual URLs, whether they arrived as one
     per line or several jammed onto one line separated by spaces/commas."""
@@ -91,7 +106,7 @@ def first_run_setup():
     print(f"Saved config to {CONFIG_PATH}")
     print(f"Music folder: {cfg['music_dir']}")
     print(f"rekordbox.xml: {cfg['xml_path']}")
-    print("\nRun `djdl setup` to check your tools and wire up rekordbox.\n")
+    print(f"\nRun `{self_invocation()} setup` to check your tools and wire up rekordbox.\n")
     return cfg
 
 
@@ -121,7 +136,7 @@ def find_ytdlp():
     exe = find_exe("yt-dlp")
     if exe:
         return exe
-    sys.exit("djdl: yt-dlp not found. Run `djdl setup` to install it.")
+    sys.exit(f"djdl: yt-dlp not found. Run `{self_invocation()} setup` to install it.")
 
 
 def is_playlist_url(url):
@@ -173,7 +188,8 @@ def build_spotdl_cmd(cfg, url):
     exe = find_spotdl()
     if exe is None:
         sys.exit(
-            "djdl: spotdl is needed for Spotify links. Run `djdl setup` to install it."
+            "djdl: spotdl is needed for Spotify links. "
+            f"Run `{self_invocation()} setup` to install it."
         )
     music_dir = cfg["music_dir"]
     outtmpl = os.path.join(music_dir, "{artists} - {title}.{output-ext}")
@@ -511,7 +527,7 @@ def install_with_brew(package):
         note('Install it with:\n'
              '  /bin/bash -c "$(curl -fsSL '
              'https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"\n'
-             "Then run the two `eval` lines it prints, and re-run `djdl setup`.")
+             f"Then run the two `eval` lines it prints, and re-run `{self_invocation()} setup`.")
         return False
     return run_visible([brew, "install", package]) == 0
 
@@ -630,7 +646,8 @@ def step_dependencies(fix):
             report("ok" if installed else "bad",
                    f"{dep['name']} installed" if installed else f"{dep['name']} still missing")
         if not installed and dep["required"]:
-            blockers.append(f"{dep['name']} is required — install it and re-run `djdl setup`")
+            blockers.append(f"{dep['name']} is required — install it and "
+                            f"re-run `{self_invocation()} setup`")
     blockers += step_ytdlp_freshness(fix)
     return blockers
 
@@ -727,7 +744,7 @@ def step_config(fix):
     elif not fix:
         # doctor changes nothing — just say what setup would do.
         report("warn", "music folder doesn't exist yet", str(music_dir))
-        return cfg, ["music folder doesn't exist yet — run `djdl setup`"]
+        return cfg, [f"music folder doesn't exist yet — run `{self_invocation()} setup`"]
     else:
         try:
             music_dir.mkdir(parents=True, exist_ok=True)
@@ -796,7 +813,8 @@ def step_cookies(cfg, fix):
 
     if not find_exe("deno"):
         report("warn", "deno missing", "YouTube's JS challenge won't solve without it")
-        note("Fix: brew install deno   (or re-run `djdl setup` and say yes at step 1)")
+        note(f"Fix: brew install deno   (or re-run `{self_invocation()} setup` "
+             "and say yes at step 1)")
 
 
     if not IS_MACOS:
@@ -812,7 +830,8 @@ def step_cookies(cfg, fix):
             app = terminal_app_name()
             report("bad", "cannot read Safari's cookies", f"{app} needs Full Disk Access")
             note(f"System Settings → Privacy & Security → Full Disk Access → add {app},\n"
-                 f"then fully quit and reopen {app} and run `djdl setup` again.")
+                 f"then fully quit and reopen {app} and run "
+                 f"`{self_invocation()} setup` again.")
             if fix and ask_yes("Open that settings pane now?", default=True):
                 open_full_disk_access_pane()
             return ["Full Disk Access is off, so Premium cookies can't be read"]
@@ -835,7 +854,7 @@ def step_xml(cfg, fix):
         # rekordbox's file picker can't select a file that doesn't exist, so make
         # one now even if the folder is still empty.
         if not fix:
-            return ["rekordbox.xml doesn't exist yet — run `djdl setup`"]
+            return [f"rekordbox.xml doesn't exist yet — run `{self_invocation()} setup`"]
         if ask_yes("Create it now (empty is fine)?", default=True):
             try:
                 generate_xml(cfg)
@@ -907,7 +926,7 @@ def step_rekordbox(cfg, fix):
     settings_files = rekordbox_settings_files()
     if not settings_files:
         report("warn", "no rekordbox settings found", "install rekordbox and launch it once")
-        note("Then run `djdl setup` again and it can wire the xml up for you.")
+        note(f"Then run `{self_invocation()} setup` again and it can wire the xml up for you.")
         return []
 
     settings = settings_files[0]
@@ -938,7 +957,8 @@ def step_rekordbox(cfg, fix):
         updates["showRbXml"] = "1"
 
     if not fix:
-        note("Run `djdl setup` to have these written for you, or set them by hand:")
+        note(f"Run `{self_invocation()} setup` to have these written for you, "
+             "or set them by hand:")
         note(SETUP_HELP.format(xml_path=xml_path,
                                playlist_name=cfg.get("playlist_name", DEFAULT_PLAYLIST_NAME)))
         return ["rekordbox is not pointed at your rekordbox.xml yet"]
@@ -956,10 +976,11 @@ def step_rekordbox(cfg, fix):
     if rekordbox_running():
         report("warn", "rekordbox is running", "it overwrites its settings on quit")
         if not ask_yes("Quit rekordbox now?", default=True):
-            note("Quit rekordbox and re-run `djdl setup`.")
+            note(f"Quit rekordbox and re-run `{self_invocation()} setup`.")
             return ["rekordbox was running, so its settings were left alone"]
         if not quit_rekordbox():
-            report("bad", "rekordbox didn't quit", "quit it by hand, then re-run `djdl setup`")
+            report("bad", "rekordbox didn't quit",
+                   f"quit it by hand, then re-run `{self_invocation()} setup`")
             return ["rekordbox was still running, so its settings were left alone"]
         report("ok", "rekordbox quit")
 
@@ -1052,6 +1073,13 @@ def finish(blockers, cfg):
     if not blockers:
         report("ok", "everything checks out")
         if cfg:
+            # If we just installed onto a PATH this shell hasn't picked up yet,
+            # say so — otherwise `djdl` looks broken in the very next command.
+            installed = (LOCAL_BIN / "djdl").exists()
+            on_path_now = str(LOCAL_BIN) in os.environ.get("PATH", "").split(os.pathsep)
+            if installed and not on_path_now:
+                note("Open a new terminal (or run `exec $SHELL`) so the `djdl` command\n"
+                     "is picked up, then:")
             note(f"Paste a link to get going:  djdl https://youtube.com/watch?v=…\n"
                  f"Tracks land in {cfg['music_dir']}\n"
                  f"After each download, hit refresh on the 'rekordbox xml' node in\n"
@@ -1060,7 +1088,7 @@ def finish(blockers, cfg):
         return 0
     for item in blockers:
         report("bad", item)
-    note("Fix those and run `djdl setup` again.")
+    note(f"Fix those and run `{self_invocation()} setup` again.")
     return 1
 
 
@@ -1071,7 +1099,7 @@ def cmd_config(args):
     cfg = load_config()
     if not args:
         if cfg is None:
-            print("No config yet. Run `djdl` to set one up.")
+            print(f"No config yet. Run `{self_invocation()} setup` to set one up.")
             return
         print(json.dumps(cfg, indent=2))
         return
