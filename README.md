@@ -40,40 +40,58 @@ refresh, select, import. Two clicks.
 
 ## Requirements
 
+Installed for you as dependencies — you don't chase these:
+
 | | |
 |---|---|
-| Python 3.8+ | stdlib only, no packages needed for the core tool |
-| [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) | on `PATH` or at `~/.local/bin/yt-dlp` — keep it updated |
-| `ffmpeg` + `ffprobe` | used by yt-dlp for muxing/thumbnail embedding — not optional |
-| [`deno`](https://deno.com/) | optional, needed for the YouTube Premium (256k) path |
-| [`spotdl`](https://github.com/spotDL/spotify-downloader) | optional, only for Spotify links |
-| [`mutagen`](https://mutagen.readthedocs.io/) | optional, improves tag reading for the XML |
+| [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) + `yt-dlp-ejs` | the downloader, and the helper for YouTube's JS challenge |
+| [`mutagen`](https://mutagen.readthedocs.io/) | tag + bitrate reading for the XML |
+| [`spotdl`](https://github.com/spotDL/spotify-downloader) | only with the `spotify` extra |
+
+Must already be on the system — these aren't Python packages:
+
+| | |
+|---|---|
+| Python 3.11+ | |
+| `ffmpeg` + `ffprobe` | yt-dlp muxes and embeds artwork with them — not optional |
+| [`deno`](https://deno.com/) | only for the YouTube Premium (256k) path |
 | rekordbox 7 | for the XML import side |
 
 ## Install
 
+With [uv](https://docs.astral.sh/uv/) (recommended — djdl gets its own isolated
+environment and lands on your `PATH` as `djdl`):
+
 ```bash
-git clone https://github.com/hennhen/djdl.git
-python3 djdl/djdl setup
+brew install ffmpeg deno                       # the non-Python half
+uv tool install 'djdl[spotify] @ git+https://github.com/hennhen/djdl'
+djdl setup
+```
+
+Drop `[spotify]` if you only use YouTube and SoundCloud — it pulls in a large
+dependency tree for Spotify link matching. `pipx install` works the same way.
+
+To upgrade — this also pulls a fresh `yt-dlp`, which is what usually needs it:
+
+```bash
+uv tool upgrade djdl
 ```
 
 `djdl setup` is a guided, re-runnable wizard that does the whole job from the terminal — no
 hunting through folders, no editing JSON, no clicking around rekordbox's preferences:
 
-1. **Tools** — checks `yt-dlp`, `ffmpeg`/`ffprobe`, `deno`, `spotdl`, `mutagen`, and offers to
-   install anything missing (Homebrew or pip). Also flags a stale `yt-dlp`, which is the usual
-   reason downloads suddenly break, and offers to upgrade it.
-2. **The command** — copies itself to `~/.local/bin/djdl` and adds that directory to your
-   `PATH` in `~/.zshrc` if it isn't there, so `djdl` just works in a new terminal.
-3. **Music folder** — asks where tracks should go and writes `~/.config/djdl/config.json`.
-4. **Quality** — asks whether you have YouTube Premium, sets the cookie browser, and checks
+1. **Tools** — checks `ffmpeg`/`ffprobe` and `deno` and offers to `brew install` anything
+   missing. Also flags a stale `yt-dlp`, which is the usual reason downloads suddenly break,
+   and offers to upgrade it.
+2. **Music folder** — asks where tracks should go and writes `~/.config/djdl/config.json`.
+3. **Quality** — asks whether you have YouTube Premium, sets the cookie browser, and checks
    macOS Full Disk Access (offering to open the right settings pane if it's missing).
-5. **rekordbox.xml** — creates the file, because rekordbox can't be pointed at one that
+4. **rekordbox.xml** — creates the file, because rekordbox can't be pointed at one that
    doesn't exist yet.
-6. **The rekordbox link** — reads rekordbox's own settings, and if the XML isn't wired up it
+5. **The rekordbox link** — reads rekordbox's own settings, and if the XML isn't wired up it
    offers to write both preferences for you (backing the file up first). rekordbox must be
    closed, and setup can quit it for you.
-7. **Live check** — asks YouTube what quality it would serve, without downloading anything.
+6. **Live check** — asks YouTube what quality it would serve, without downloading anything.
 
 Every step is a yes/no prompt, and re-running is safe: anything already correct shows a ✓ and
 is left alone. Run `djdl doctor` any time for the same report without changing a thing — it
@@ -146,7 +164,32 @@ Troubleshooting:
 Note that ~256k AAC is the ceiling for this pipeline — there is no lossless path from YouTube. For
 that you want a store like Beatport or Bandcamp.
 
-## Design notes
+## Development
 
-[PLAN.md](PLAN.md) has the original design write-up: format selection reasoning, the XML schema
-choice, and why the rekordbox database isn't written directly.
+```bash
+uv sync --all-extras   # dev environment
+uv run pytest          # the test suite
+uv run djdl doctor     # run it without installing
+```
+
+Layout:
+
+```
+src/djdl/
+├── cli.py             argv → command, the interactive loop
+├── config.py          ~/.config/djdl/config.json
+├── sources.py         what a pasted URL is (track / set / playlist / Spotify)
+├── download.py        building the yt-dlp and spotdl commands
+├── tools.py           finding and running external executables
+├── rekordbox/
+│   ├── tags.py        reading tags off the files
+│   ├── xml.py         rendering rekordbox.xml
+│   └── settings.py    patching rekordbox's own preferences file
+└── doctor/
+    ├── ui.py          report lines and prompts
+    └── steps.py       the setup / doctor checks
+```
+
+djdl shells out to the `yt-dlp` binary rather than importing it: the CLI flags are its stable,
+documented interface where the Python API explicitly isn't, the progress bar comes for free, and
+a command that fails can be copy-pasted and run by hand.
