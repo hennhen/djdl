@@ -1,7 +1,8 @@
 # djdl
 
-Paste a YouTube or Spotify link into your terminal, get a properly tagged **M4A/AAC** file in your
-music folder, and have it show up in **rekordbox 7** — no file browsing, no re-encoding.
+Paste a YouTube, SoundCloud or Spotify link into your terminal, get a properly tagged
+**M4A/AAC** file in your music folder, and have it show up in **rekordbox 7** — no file
+browsing, no re-encoding.
 
 ```
 $ djdl https://www.youtube.com/watch?v=...
@@ -18,8 +19,14 @@ refresh, select, import. Two clicks.
 
 ## Features
 
-- **YouTube + Spotify** — YouTube URLs go through `yt-dlp`; `open.spotify.com` links go through
-  `spotdl` (which matches tracks to YouTube Music under the hood). Same folder, same tagging, same XML.
+- **YouTube + SoundCloud + Spotify** — YouTube and SoundCloud URLs go through `yt-dlp`;
+  `open.spotify.com` links go through `spotdl` (which matches tracks to YouTube Music under the
+  hood). Same folder, same tagging, same XML.
+- **SoundCloud, at the best quality it offers** — SoundCloud serves 160k AAC on many tracks and
+  128k MP3 on all of them; djdl takes the better of the two and keeps the container it arrives
+  in rather than re-encoding one lossy format into another. Sets (`/sets/`, `/likes`, `/tracks`,
+  `/albums`) expand into all their tracks; a single track that merely *links* a set
+  (`?in=user/sets/…`) stays a single track.
 - **No lossy re-encode** — grabs the native AAC stream (`bestaudio[ext=m4a]`) untouched. A `mp3-320`
   format option exists if a CDJ ever demands it.
 - **256k with YouTube Premium** — point it at a browser you're logged into and it pulls format 141
@@ -27,7 +34,8 @@ refresh, select, import. Two clicks.
 - **Real tags + artwork** — embeds metadata and the video thumbnail as cover art, and splits
   `"Artist - Title"` video names into proper artist/title tags.
 - **Dedupe** — a download archive means re-pasting a link you already have is a no-op.
-- **Playlists** — playlist URLs expand; a video URL that merely carries `&list=` does not.
+- **Playlists** — YouTube playlist URLs and SoundCloud sets expand; a track URL that merely
+  carries `&list=` or `?in=` does not.
 - **Interactive mode** — run with no args and paste links one after another until you're done.
 
 ## Requirements
@@ -75,7 +83,7 @@ exits non-zero if something's broken, so it works in a script.
 
 | Command | What it does |
 |---|---|
-| `djdl <url> [url ...]` | Download each URL, tag it, regenerate `rekordbox.xml` |
+| `djdl <url> [url ...]` | Download each URL (YouTube, SoundCloud, Spotify), tag it, regenerate `rekordbox.xml` |
 | `djdl` | Interactive loop — paste a URL to download; blank line or Ctrl-D quits |
 | `djdl setup` | Guided setup — tools, config, cookies, the rekordbox link. Re-run any time |
 | `djdl doctor` | The same checks, read-only. Changes nothing, exits 1 if something's wrong |

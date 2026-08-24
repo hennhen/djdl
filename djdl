@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""djdl — download songs from YouTube in best-quality M4A and bridge them into
-rekordbox 7 via a regenerated rekordbox.xml.
+"""djdl — download songs from YouTube, SoundCloud and Spotify in the best
+quality on offer and bridge them into rekordbox 7 via a regenerated
+rekordbox.xml.
 
 Usage:
   djdl <url> [url ...]              Download each URL, tag it, refresh rekordbox.xml
@@ -139,9 +140,23 @@ def find_ytdlp():
     sys.exit(f"djdl: yt-dlp not found. Run `{self_invocation()} setup` to install it.")
 
 
+# SoundCloud pages that are a collection of tracks rather than one track.
+SOUNDCLOUD_SET_SUFFIXES = ("/likes", "/tracks", "/albums", "/reposts",
+                           "/popular-tracks", "/sets")
+
+
+def is_soundcloud_url(url):
+    return "soundcloud.com" in url
+
+
 def is_playlist_url(url):
-    """A dedicated playlist page should be expanded; a plain video URL that merely
-    carries a &list= param should not drag in the whole playlist."""
+    """A dedicated playlist page should be expanded; a plain track URL that merely
+    carries a playlist reference should not drag in the whole playlist."""
+    if is_soundcloud_url(url):
+        # Only the path decides: a track inside a set carries the set in its
+        # query string (?in=user/sets/name) and must stay a single track.
+        path = urllib.parse.urlparse(url).path.rstrip("/")
+        return "/sets/" in path or path.endswith(SOUNDCLOUD_SET_SUFFIXES)
     return "playlist?" in url or "/playlist" in url
 
 
@@ -171,8 +186,20 @@ def build_ytdlp_cmd(cfg, url):
         "--parse-metadata", "title:(?P<artist>.+?) - (?P<title>.+)",
     ]
 
+    if is_soundcloud_url(url):
+        # SoundCloud also fills `track` with the full "Artist - Title" string,
+        # and that field wins when tags are embedded — so the split above would
+        # show up in the filename but not in the tag. Split it the same way.
+        cmd += ["--parse-metadata", "track:.+? - (?P<track>.+)"]
+
     if cfg["format"] == "mp3-320":
         cmd += ["-x", "--audio-format", "mp3", "--audio-quality", "320K"]
+    elif is_soundcloud_url(url):
+        # SoundCloud serves 160k AAC on many tracks and 128k MP3 on all of them.
+        # Take the better of the two and keep the container it arrives in —
+        # re-encoding one lossy format into another only throws away more.
+        cmd += ["-f", "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio",
+                "-x", "--audio-format", "best"]
     else:  # m4a: grab best AAC untouched (256k with Premium cookies, else 128k)
         cmd += ["-f", "bestaudio[ext=m4a]/bestaudio", "-x", "--audio-format", "m4a"]
 
@@ -220,7 +247,7 @@ def download(cfg, url):
         tool = "spotdl"
     else:
         cmd = build_ytdlp_cmd(cfg, url)
-        tool = "yt-dlp"
+        tool = "yt-dlp · soundcloud" if is_soundcloud_url(url) else "yt-dlp"
     print(f"\n▶ downloading ({tool}): {url}")
     result = subprocess.run(cmd)
     if result.returncode != 0:
