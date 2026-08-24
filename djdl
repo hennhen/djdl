@@ -1,0 +1,463 @@
+#!/usr/bin/env python3
+"""djdl — download songs from YouTube in best-quality M4A and bridge them into
+rekordbox 7 via a regenerated rekordbox.xml.
+
+Usage:
+  djdl <url> [url ...]              Download each URL, tag it, refresh rekordbox.xml
+  djdl                             Interactive loop: paste a URL to download; blank line / Ctrl-D quits
+  djdl config                      Show current config
+  djdl config folder <path>        Set the music folder
+  djdl config format m4a|mp3-320   Set the download format
+  djdl setup-help                  Print the one-time rekordbox setup instructions
+"""
+
+import json
+import os
+import re
+import select
+import shutil
+import subprocess
+import sys
+import urllib.parse
+from pathlib import Path
+
+CONFIG_DIR = Path.home() / ".config" / "djdl"
+CONFIG_PATH = CONFIG_DIR / "config.json"
+DEFAULT_MUSIC_DIR = Path.home() / "Music" / "DJ Downloads"
+DEFAULT_PLAYLIST_NAME = "DJ Downloads"
+VALID_FORMATS = ("m4a", "mp3-320")
+VALID_BROWSERS = ("chrome", "safari", "firefox", "brave", "edge")
+AUDIO_EXTS = (".m4a", ".mp3")
+
+
+def split_urls(text):
+    """Split a pasted blob into individual URLs, whether they arrived as one
+    per line or several jammed onto one line separated by spaces/commas."""
+    return [tok for tok in re.split(r"[\s,]+", text.strip()) if tok]
+
+
+# --------------------------------------------------------------------------- #
+# Config
+# --------------------------------------------------------------------------- #
+def default_config(music_dir=DEFAULT_MUSIC_DIR):
+    music_dir = Path(music_dir).expanduser()
+    return {
+        "music_dir": str(music_dir),
+        "format": "m4a",
+        "playlist_name": DEFAULT_PLAYLIST_NAME,
+        "xml_path": str(music_dir / "rekordbox.xml"),
+        # Browser to read YouTube login cookies from (unlocks 256k AAC with
+        # YouTube Premium). Empty string = no cookies (128k ceiling).
+        "cookies_browser": "",
+    }
+
+
+def load_config():
+    if not CONFIG_PATH.exists():
+        return None
+    try:
+        with open(CONFIG_PATH) as f:
+            cfg = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        sys.exit(f"djdl: could not read config at {CONFIG_PATH}: {e}")
+    # Backfill any missing keys against the defaults.
+    merged = default_config(cfg.get("music_dir", DEFAULT_MUSIC_DIR))
+    merged.update(cfg)
+    return merged
+
+
+def save_config(cfg):
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(cfg, f, indent=2)
+        f.write("\n")
+
+
+def first_run_setup():
+    print("djdl — first-run setup")
+    print(f"Where should downloaded tracks go? [{DEFAULT_MUSIC_DIR}]")
+    try:
+        answer = input("Folder: ").strip()
+    except EOFError:
+        answer = ""
+    music_dir = Path(answer).expanduser() if answer else DEFAULT_MUSIC_DIR
+    cfg = default_config(music_dir)
+    Path(cfg["music_dir"]).mkdir(parents=True, exist_ok=True)
+    save_config(cfg)
+    print(f"Saved config to {CONFIG_PATH}")
+    print(f"Music folder: {cfg['music_dir']}")
+    print(f"rekordbox.xml: {cfg['xml_path']}")
+    print("\nRun `djdl setup-help` for the one-time rekordbox preference setup.\n")
+    return cfg
+
+
+def ensure_config():
+    cfg = load_config()
+    if cfg is None:
+        cfg = first_run_setup()
+    Path(cfg["music_dir"]).mkdir(parents=True, exist_ok=True)
+    return cfg
+
+
+# --------------------------------------------------------------------------- #
+# yt-dlp download
+# --------------------------------------------------------------------------- #
+def find_ytdlp():
+    exe = shutil.which("yt-dlp")
+    if exe:
+        return exe
+    fallback = Path.home() / ".local" / "bin" / "yt-dlp"
+    if fallback.exists():
+        return str(fallback)
+    sys.exit("djdl: yt-dlp not found on PATH or at ~/.local/bin/yt-dlp")
+
+
+def is_playlist_url(url):
+    """A dedicated playlist page should be expanded; a plain video URL that merely
+    carries a &list= param should not drag in the whole playlist."""
+    return "playlist?" in url or "/playlist" in url
+
+
+def is_spotify_url(url):
+    return "open.spotify.com" in url or url.startswith("spotify:")
+
+
+def find_spotdl():
+    exe = shutil.which("spotdl")
+    if exe:
+        return exe
+    fallback = Path.home() / ".local" / "bin" / "spotdl"
+    if fallback.exists():
+        return str(fallback)
+    return None
+
+
+def build_ytdlp_cmd(cfg, url):
+    exe = find_ytdlp()
+    music_dir = cfg["music_dir"]
+    archive = os.path.join(music_dir, ".archive.txt")
+    outtmpl = os.path.join(music_dir, "%(artist,uploader)s - %(title)s.%(ext)s")
+
+    cmd = [
+        exe,
+        "--ignore-config",
+        "--no-playlist" if not is_playlist_url(url) else "--yes-playlist",
+        "--download-archive", archive,
+        "-o", outtmpl,
+        "--embed-metadata",
+        "--embed-thumbnail",
+        # Split "Artist - Title" video names into proper artist/title tags.
+        "--parse-metadata", "title:(?P<artist>.+?) - (?P<title>.+)",
+    ]
+
+    if cfg["format"] == "mp3-320":
+        cmd += ["-x", "--audio-format", "mp3", "--audio-quality", "320K"]
+    else:  # m4a: grab best AAC untouched (256k with Premium cookies, else 128k)
+        cmd += ["-f", "bestaudio[ext=m4a]/bestaudio", "-x", "--audio-format", "m4a"]
+
+    browser = cfg.get("cookies_browser", "")
+    if browser:
+        cmd += ["--cookies-from-browser", browser]
+
+    cmd.append(url)
+    return cmd
+
+
+def build_spotdl_cmd(cfg, url):
+    exe = find_spotdl()
+    if exe is None:
+        sys.exit(
+            "djdl: spotdl not installed. Install it with:\n"
+            "  python3 -m pip install --user spotdl"
+        )
+    music_dir = cfg["music_dir"]
+    outtmpl = os.path.join(music_dir, "{artists} - {title}.{output-ext}")
+
+    cmd = [
+        exe, "download", url,
+        "--output", outtmpl,
+        "--print-errors",
+    ]
+    if cfg["format"] == "mp3-320":
+        cmd += ["--format", "mp3", "--bitrate", "320k"]
+    else:
+        # Keep the matched audio stream untouched (no lossy re-encode); AAC/m4a
+        # is what CDJs and rekordbox want.
+        cmd += ["--format", "m4a", "--bitrate", "disable"]
+
+    browser = cfg.get("cookies_browser", "")
+    if browser:
+        # spotdl uses yt-dlp under the hood; pass Premium cookies through so it
+        # can fetch the 256k AAC stream from YouTube Music.
+        cmd += ["--yt-dlp-args", f"--cookies-from-browser {browser}"]
+    return cmd
+
+
+def download(cfg, url):
+    if is_spotify_url(url):
+        cmd = build_spotdl_cmd(cfg, url)
+        tool = "spotdl"
+    else:
+        cmd = build_ytdlp_cmd(cfg, url)
+        tool = "yt-dlp"
+    print(f"\n▶ downloading ({tool}): {url}")
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        print(f"djdl: {tool} exited with code {result.returncode} for {url}",
+              file=sys.stderr)
+    return result.returncode == 0
+
+
+# --------------------------------------------------------------------------- #
+# rekordbox.xml generation
+# --------------------------------------------------------------------------- #
+def path_to_location(path):
+    """rekordbox Location URI: file://localhost/<percent-encoded absolute path>."""
+    quoted = urllib.parse.quote(str(path))
+    return "file://localhost" + quoted
+
+
+def xml_escape_attr(value):
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace('"', "&quot;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def read_track_tags(path):
+    """Return a dict of tag data for a track, falling back to the filename."""
+    import mutagen
+
+    name = path.stem
+    artist, title = "", name
+    m = re.match(r"(.+?) - (.+)", name)
+    if m:
+        artist, title = m.group(1), m.group(2)
+
+    album, genre = "", ""
+    total_time = 0
+    bitrate = 0
+    sample_rate = 0
+
+    try:
+        audio = mutagen.File(str(path), easy=True)
+        if audio is not None:
+            if audio.tags:
+                title = (audio.tags.get("title") or [title])[0]
+                artist = (audio.tags.get("artist") or [artist])[0]
+                album = (audio.tags.get("album") or [album])[0]
+                genre = (audio.tags.get("genre") or [genre])[0]
+            info = getattr(audio, "info", None)
+            if info is not None:
+                total_time = int(round(getattr(info, "length", 0) or 0))
+                bitrate = int(getattr(info, "bitrate", 0) or 0)
+                sample_rate = int(getattr(info, "sample_rate", 0) or 0)
+    except Exception as e:
+        print(f"djdl: could not read tags for {path.name}: {e}", file=sys.stderr)
+
+    kind = "MP3 File" if path.suffix.lower() == ".mp3" else "M4A File"
+    return {
+        "title": title,
+        "artist": artist,
+        "album": album,
+        "genre": genre,
+        "kind": kind,
+        "total_time": total_time,
+        "bitrate": bitrate // 1000 if bitrate else 0,  # rekordbox wants kbps
+        "sample_rate": sample_rate,
+        "size": path.stat().st_size,
+        "location": path_to_location(path.resolve()),
+    }
+
+
+def generate_xml(cfg):
+    music_dir = Path(cfg["music_dir"])
+    audio_files = [
+        p for p in music_dir.iterdir()
+        if p.is_file() and p.suffix.lower() in AUDIO_EXTS
+    ]
+    # Newest download first: most recently modified track sits at the top of the
+    # playlist, so a freshly grabbed track appears right where you expect it.
+    files = sorted(audio_files, key=lambda p: p.stat().st_mtime, reverse=True)
+    tracks = [read_track_tags(p) for p in files]
+
+    lines = ['<?xml version="1.0" encoding="UTF-8"?>']
+    lines.append('<DJ_PLAYLISTS Version="1.0.0">')
+    lines.append('  <PRODUCT Name="djdl" Version="1.0" Company="djdl"/>')
+    lines.append(f'  <COLLECTION Entries="{len(tracks)}">')
+    for i, t in enumerate(tracks, start=1):
+        attrs = [
+            f'TrackID="{i}"',
+            f'Name="{xml_escape_attr(t["title"])}"',
+            f'Artist="{xml_escape_attr(t["artist"])}"',
+            f'Album="{xml_escape_attr(t["album"])}"',
+            f'Genre="{xml_escape_attr(t["genre"])}"',
+            f'Kind="{xml_escape_attr(t["kind"])}"',
+            f'Size="{t["size"]}"',
+            f'TotalTime="{t["total_time"]}"',
+        ]
+        if t["bitrate"]:
+            attrs.append(f'BitRate="{t["bitrate"]}"')
+        if t["sample_rate"]:
+            attrs.append(f'SampleRate="{t["sample_rate"]}"')
+        attrs.append(f'Location="{t["location"]}"')
+        lines.append(f'    <TRACK {" ".join(attrs)}/>')
+    lines.append('  </COLLECTION>')
+
+    playlist_name = cfg.get("playlist_name", DEFAULT_PLAYLIST_NAME)
+    lines.append('  <PLAYLISTS>')
+    lines.append('    <NODE Type="0" Name="ROOT" Count="1">')
+    lines.append(
+        f'      <NODE Name="{xml_escape_attr(playlist_name)}" Type="1" '
+        f'KeyType="0" Entries="{len(tracks)}">'
+    )
+    for i in range(1, len(tracks) + 1):
+        lines.append(f'        <TRACK Key="{i}"/>')
+    lines.append('      </NODE>')
+    lines.append('    </NODE>')
+    lines.append('  </PLAYLISTS>')
+    lines.append('</DJ_PLAYLISTS>')
+
+    xml_path = Path(cfg["xml_path"])
+    xml_path.parent.mkdir(parents=True, exist_ok=True)
+    xml_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"✓ rekordbox.xml updated ({len(tracks)} tracks) → {xml_path}")
+
+
+# --------------------------------------------------------------------------- #
+# Commands
+# --------------------------------------------------------------------------- #
+def cmd_config(args):
+    cfg = load_config()
+    if not args:
+        if cfg is None:
+            print("No config yet. Run `djdl` to set one up.")
+            return
+        print(json.dumps(cfg, indent=2))
+        return
+
+    if cfg is None:
+        cfg = default_config()
+
+    key = args[0]
+    if key == "folder":
+        if len(args) < 2:
+            sys.exit("usage: djdl config folder <path>")
+        music_dir = Path(args[1]).expanduser()
+        music_dir.mkdir(parents=True, exist_ok=True)
+        cfg["music_dir"] = str(music_dir)
+        cfg["xml_path"] = str(music_dir / "rekordbox.xml")
+        save_config(cfg)
+        print(f"music_dir = {cfg['music_dir']}")
+        print(f"xml_path  = {cfg['xml_path']}")
+    elif key == "format":
+        if len(args) < 2 or args[1] not in VALID_FORMATS:
+            sys.exit(f"usage: djdl config format {'|'.join(VALID_FORMATS)}")
+        cfg["format"] = args[1]
+        save_config(cfg)
+        print(f"format = {cfg['format']}")
+    elif key == "cookies":
+        if len(args) < 2:
+            sys.exit(f"usage: djdl config cookies {'|'.join(VALID_BROWSERS)}|off")
+        val = args[1].lower()
+        if val in ("off", "none", ""):
+            cfg["cookies_browser"] = ""
+        elif val in VALID_BROWSERS:
+            cfg["cookies_browser"] = val
+        else:
+            sys.exit(f"usage: djdl config cookies {'|'.join(VALID_BROWSERS)}|off")
+        save_config(cfg)
+        print(f"cookies_browser = {cfg['cookies_browser'] or '(off)'}")
+    else:
+        sys.exit(f"djdl: unknown config key '{key}'")
+
+
+SETUP_HELP = """\
+One-time rekordbox 7 setup (do this once):
+
+  1. rekordbox 7 → Preferences → Advanced → Database → "rekordbox xml"
+     → set the imported library file to:
+         {xml_path}
+
+  2. Preferences → View → Layout → check "rekordbox xml"
+     so it appears in the left sidebar tree.
+
+After every `djdl` download:
+
+  3. Click the refresh icon on the "rekordbox xml" node in the sidebar.
+  4. Open the "{playlist_name}" playlist under it, select all tracks,
+     right-click → "Import to Collection" (or drag them into Collection).
+"""
+
+
+def cmd_setup_help():
+    cfg = load_config() or default_config()
+    print(SETUP_HELP.format(
+        xml_path=cfg["xml_path"],
+        playlist_name=cfg.get("playlist_name", DEFAULT_PLAYLIST_NAME),
+    ))
+
+
+def run_downloads(cfg, urls):
+    any_ok = False
+    for url in urls:
+        if download(cfg, url):
+            any_ok = True
+    # Always regenerate the xml so it reflects the current folder contents.
+    generate_xml(cfg)
+    return any_ok
+
+
+def drain_pasted_lines():
+    """After input() already returned one line, grab any further lines that
+    were pasted alongside it and are already sitting in the input buffer, so
+    a multi-link paste is processed as one batch instead of one line at a time."""
+    lines = []
+    while select.select([sys.stdin], [], [], 0)[0]:
+        line = sys.stdin.readline()
+        if not line:
+            break
+        lines.append(line.rstrip("\n"))
+    return lines
+
+
+def interactive_loop(cfg):
+    print("djdl interactive — paste one or more YouTube URLs and press Enter.")
+    print("Blank line or Ctrl-D to quit.\n")
+    while True:
+        try:
+            line = input("url> ").strip()
+        except EOFError:
+            print()
+            break
+        if not line:
+            break
+        pasted = [line] + drain_pasted_lines()
+        urls = [u for l in pasted for u in split_urls(l)]
+        for url in urls:
+            download(cfg, url)
+        generate_xml(cfg)
+    print("bye.")
+
+
+def main(argv):
+    if argv and argv[0] == "config":
+        cmd_config(argv[1:])
+        return
+    if argv and argv[0] == "setup-help":
+        cmd_setup_help()
+        return
+
+    cfg = ensure_config()
+    if argv:
+        urls = [u for a in argv for u in split_urls(a)]
+        run_downloads(cfg, urls)
+    else:
+        interactive_loop(cfg)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
