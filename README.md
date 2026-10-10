@@ -109,6 +109,7 @@ exits non-zero if something's broken, so it works in a script.
 | `djdl config folder <path>` | Set the music folder (also moves `rekordbox.xml`) |
 | `djdl config format m4a\|mp3-320` | Set the download format |
 | `djdl config cookies safari\|chrome\|firefox\|brave\|edge\|off` | Set which browser to read login cookies from |
+| `djdl config spotify <client-id> <client-secret>\|off` | Your Spotify app, for downloading Liked Songs |
 | `djdl setup-help` | Print the rekordbox preference steps to do by hand |
 
 ## Config
@@ -163,6 +164,28 @@ Troubleshooting:
 
 Note that ~256k AAC is the ceiling for this pipeline — there is no lossless path from YouTube. For
 that you want a store like Beatport or Bandcamp.
+
+## Spotify Liked Songs
+
+`https://open.spotify.com/collection/tracks` is your Liked Songs. Unlike a playlist it has no
+public link, so reading it means logging in to Spotify, and spotdl's shared app can't log you in.
+Logging in needs your own Spotify developer app. Since February 2026 Spotify only lets a
+development-mode app work if its owner has **Spotify Premium**.
+
+1. Go to the [Spotify developer dashboard](https://developer.spotify.com/dashboard) and create an
+   app. Add `http://127.0.0.1:9900/` as a redirect URI and tick **Web API**.
+2. Copy its client ID and secret into djdl:
+
+   ```bash
+   djdl config spotify <client-id> <client-secret>
+   ```
+
+3. Paste the Liked Songs link. The first time, a browser window opens to log in; spotdl caches the
+   token under `~/.spotdl`, so later runs go straight through. Re-pasting the link picks up only
+   the songs you've liked since.
+
+The ID and secret sit in plain text in `config.json`, like spotdl's own config. If you'd rather not
+set up an app, copy your Liked Songs into a normal playlist and paste that link instead.
 
 ## Development
 

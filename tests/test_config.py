@@ -46,3 +46,12 @@ def test_a_corrupt_config_exits_rather_than_silently_resetting():
     config.CONFIG_PATH.write_text("{not json")
     with pytest.raises(SystemExit):
         config.load_config()
+
+
+def test_spotify_login_needs_both_halves():
+    cfg = config.default_config()
+    assert not config.has_spotify_login(cfg)
+    cfg["spotify_client_id"] = "id"
+    assert not config.has_spotify_login(cfg)
+    cfg["spotify_client_secret"] = "secret"
+    assert config.has_spotify_login(cfg)

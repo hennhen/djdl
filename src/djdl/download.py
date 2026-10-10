@@ -9,10 +9,19 @@ import os
 import subprocess
 import sys
 
-from djdl import sources, tools
+from djdl import config, sources, tools
 
 YTDLP_HINT = "It ships with djdl — reinstall with `uv tool install --force djdl`."
 SPOTDL_HINT = "Spotify links need it: `uv tool install --force 'djdl[spotify]'`."
+SPOTIFY_LOGIN_HINT = """\
+djdl: Liked Songs needs a Spotify login, which needs your own Spotify app
+(and Spotify Premium, which Spotify requires for developer apps).
+  1. Create an app at https://developer.spotify.com/dashboard
+     with the redirect URI  http://127.0.0.1:9900/  and the Web API ticked.
+  2. djdl config spotify <client-id> <client-secret>
+  3. Paste the Liked Songs link again. A browser opens once to log in;
+     after that the login is remembered.
+Or skip all this: copy your Liked Songs into a normal playlist and paste that link."""
 
 
 def build_ytdlp_cmd(cfg, url, exe="yt-dlp"):
@@ -54,8 +63,9 @@ def build_ytdlp_cmd(cfg, url, exe="yt-dlp"):
 
 
 def build_spotdl_cmd(cfg, url, exe="spotdl"):
+    liked = sources.is_spotify_liked_songs(url)
     cmd = [
-        exe, "download", url,
+        exe, "download", "saved" if liked else url,
         "--output", os.path.join(cfg["music_dir"], "{artists} - {title}.{output-ext}"),
         "--print-errors",
     ]
@@ -70,11 +80,22 @@ def build_spotdl_cmd(cfg, url, exe="spotdl"):
         # spotdl uses yt-dlp under the hood; pass Premium cookies through so it
         # can fetch the 256k AAC stream from YouTube Music.
         cmd += ["--yt-dlp-args", f"--cookies-from-browser {cfg['cookies_browser']}"]
+
+    if liked:
+        # --user-auth makes spotdl switch to the official Spotify API and log
+        # in through the browser (redirect http://127.0.0.1:9900/). The token
+        # is cached under ~/.spotdl, so it only asks once.
+        cmd += ["--user-auth",
+                "--client-id", cfg["spotify_client_id"],
+                "--client-secret", cfg["spotify_client_secret"]]
     return cmd
 
 
 def download(cfg, url):
     """Fetch one URL. Returns True if the downloader was happy."""
+    if sources.is_spotify_liked_songs(url) and not config.has_spotify_login(cfg):
+        print(SPOTIFY_LOGIN_HINT, file=sys.stderr)
+        return False
     if sources.is_spotify(url):
         cmd = build_spotdl_cmd(cfg, url, tools.require("spotdl", SPOTDL_HINT))
     else:
