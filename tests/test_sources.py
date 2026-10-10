@@ -41,3 +41,23 @@ def test_describe_names_the_downloader():
     assert sources.describe(YT) == "yt-dlp"
     assert sources.describe("spotify:track:x") == "spotdl"
     assert "soundcloud" in sources.describe("https://soundcloud.com/u/t")
+
+
+def test_spotify_liked_songs_is_recognised():
+    for url in (
+        "https://open.spotify.com/collection/tracks",
+        "https://open.spotify.com/collection/tracks/",
+        "https://open.spotify.com/intl-de/collection/tracks",
+    ):
+        assert sources.is_spotify_liked_songs(url), url
+    assert sources.describe("https://open.spotify.com/collection/tracks") == "spotdl · liked songs"
+
+
+def test_ordinary_spotify_links_are_not_liked_songs():
+    for url in (
+        "https://open.spotify.com/track/xyz",
+        "https://open.spotify.com/playlist/xyz",
+        "spotify:track:xyz",
+        "https://soundcloud.com/user/tracks",
+    ):
+        assert not sources.is_spotify_liked_songs(url), url

@@ -22,6 +22,21 @@ def is_spotify(url):
     return "open.spotify.com" in url or url.startswith("spotify:")
 
 
+def is_spotify_liked_songs(url):
+    """Your Spotify Liked Songs (open.spotify.com/collection/tracks).
+
+    It isn't a real playlist: it has no ID and only a logged-in session can
+    read it. spotdl also mistakes the URL for a single track (it contains
+    "track") and crashes, so it has to be turned into spotdl's `saved` query.
+    """
+    if "open.spotify.com" not in url:
+        return False
+    path = urllib.parse.urlparse(url).path.rstrip("/")
+    # Localised links carry a prefix: /intl-de/collection/tracks
+    path = re.sub(r"^/intl-[a-z]{2}(-[a-z]{2})?", "", path, flags=re.IGNORECASE)
+    return path == "/collection/tracks"
+
+
 def is_playlist(url):
     """A dedicated playlist page should be expanded; a plain track URL that
     merely carries a playlist reference should not drag in the whole playlist."""
@@ -35,6 +50,8 @@ def is_playlist(url):
 
 def describe(url):
     """Which downloader handles this URL, for the line printed before it runs."""
+    if is_spotify_liked_songs(url):
+        return "spotdl · liked songs"
     if is_spotify(url):
         return "spotdl"
     return "yt-dlp · soundcloud" if is_soundcloud(url) else "yt-dlp"

@@ -12,6 +12,7 @@ Usage:
   djdl config folder <path>         Set the music folder
   djdl config format m4a|mp3-320    Set the download format
   djdl config cookies <browser>     Read login cookies from a browser (Premium quality)
+  djdl config spotify <id> <secret> Your Spotify app, for downloading Liked Songs
   djdl setup-help                   Print the rekordbox preference steps to do by hand
 """
 
@@ -64,6 +65,15 @@ def cmd_config(args):
             sys.exit(f"usage: djdl config cookies {'|'.join(VALID_BROWSERS)}|off")
         save_config(cfg)
         print(f"cookies_browser = {cfg['cookies_browser'] or '(off)'}")
+    elif key == "spotify":
+        if value in ("off", "none") and len(args) == 2:
+            cfg["spotify_client_id"] = cfg["spotify_client_secret"] = ""
+        elif len(args) == 3:
+            cfg["spotify_client_id"], cfg["spotify_client_secret"] = args[1], args[2]
+        else:
+            sys.exit("usage: djdl config spotify <client-id> <client-secret>|off")
+        save_config(cfg)
+        print(f"spotify_client_id = {cfg['spotify_client_id'] or '(off)'}")
     else:
         sys.exit(f"djdl: unknown config key '{key}'")
     return 0

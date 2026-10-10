@@ -22,6 +22,10 @@ def default_config(music_dir=DEFAULT_MUSIC_DIR):
         # Browser to read YouTube login cookies from (unlocks 256k AAC with
         # YouTube Premium). Empty string = no cookies (128k ceiling).
         "cookies_browser": "",
+        # Your own Spotify developer app, needed only for Liked Songs: reading
+        # them requires logging in, and spotdl's shared app can't log you in.
+        "spotify_client_id": "",
+        "spotify_client_secret": "",
     }
 
 
@@ -50,6 +54,10 @@ def set_music_dir(cfg, path):
     cfg["music_dir"] = str(music_dir)
     cfg["xml_path"] = str(music_dir / "rekordbox.xml")
     return cfg
+
+
+def has_spotify_login(cfg):
+    return bool(cfg.get("spotify_client_id") and cfg.get("spotify_client_secret"))
 
 
 def playlist_name(cfg):
